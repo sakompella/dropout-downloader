@@ -26,6 +26,7 @@ async fn main() -> Result<()> {
     run().await
 }
 
+#[allow(dead_code)]
 const D20_SEASONS: u8 = 21;
 const GC_SEASONS: u8 = 6;
 
@@ -105,6 +106,7 @@ async fn download_link(link: &str) -> Result<Output> {
     )
 }
 
+#[allow(dead_code)]
 async fn start_geckodriver() -> Result<Child> {
     Command::new("/home/aditya/.nix-profile/bin/killall").output().await.wrap_err("cannot killall")?;
     let child = Command::new("/home/aditya/.nix-profile/bin/geckodriver")
