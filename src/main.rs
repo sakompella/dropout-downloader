@@ -52,14 +52,12 @@ async fn run() -> Result<()> {
 }
 
 async fn download() -> Result<()> {
-    // let mut geckodriver_command = start_geckodriver().await?;
     let links = {
         let links_str = tokio::fs::read_to_string("links.json").await?;
         let Links { links } = serde_json::from_str(&links_str)?;
         links
     };
     download_all_links(links).await.wrap_err("could not download")?;
-    // geckodriver_command.kill().await?;
     Ok(())
 }
 
@@ -69,7 +67,7 @@ struct Links {
 }
 
 async fn download_all_links(links: Vec<String>) -> Result<()> {
-    let semaphore = Arc::new(Semaphore::new(4));
+    let semaphore = Arc::new(Semaphore::new(2));
     let mut tasks_set = JoinSet::new();
     for link in links {
         let semaphore = semaphore.clone();
