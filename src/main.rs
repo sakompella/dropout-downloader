@@ -67,7 +67,7 @@ struct Links {
 }
 
 async fn download_all_links(links: Vec<String>) -> Result<()> {
-    let semaphore = Arc::new(Semaphore::new(2));
+    let semaphore = Arc::new(Semaphore::new(1));
     let mut tasks_set = JoinSet::new();
     for link in links {
         let semaphore = semaphore.clone();
@@ -104,7 +104,6 @@ async fn download_link(link: &str) -> Result<Output> {
     )
 }
 
-#[allow(dead_code)]
 async fn start_geckodriver() -> Result<Child> {
     Command::new("/home/aditya/.nix-profile/bin/killall").output().await.wrap_err("cannot killall")?;
     let child = Command::new("/home/aditya/.nix-profile/bin/geckodriver")
@@ -112,10 +111,10 @@ async fn start_geckodriver() -> Result<Child> {
     Ok(child)
 }
 
+const DROPOUT_URL: &str = "https://www.dropout.tv";
 #[inline]
 fn dropout(string: &str) -> String {
-    const PREPEND: &str = "https://www.dropout.tv";
-    format!("{}{}", PREPEND, string)
+    format!("{}{}", DROPOUT_URL, string)
 }
 
 async fn grab_links() -> Result<Vec<String>> {
