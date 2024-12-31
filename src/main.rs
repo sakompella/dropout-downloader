@@ -9,13 +9,14 @@
 //! color-eyre = "0.6.2"
 //! ```
 /*
-#! nix-shell -i rust-script -p rustc -p rust-script -p cargo -p yt-dlp
+#! nix-shell -i rust-script -p rustc -p rust-script -p cargo -p yt-dlp -p geckodriver
 */
 
 #[warn(clippy::pedantic, clippy::nursery, clippy::style)]
 #[deny(unused_must_use)]
 
 use std::{process::Output, sync::Arc};
+use std::time::Duration;
 use color_eyre::{eyre::{bail, WrapErr, eyre}, Result};
 use tokio::{io::AsyncWriteExt, process::{Child, Command}, task::JoinSet, sync::Semaphore};
 use thirtyfour::prelude::*;
@@ -82,13 +83,15 @@ async fn download_all_links(links: Vec<String>) -> Result<()> {
     while let Some(result) = tasks_set.join_next().await {
         let (output, link) = result??;
         if output.status.success() {
-            println!("success! {link}");
+            stdout.write_all(format!("success! {link}").as_bytes()).await?;
+            stdout.flush().await?;
             continue;
         }
 
         // failure
         stdout.write_all(format!("failure for link \"{}\" ! \n", link).as_bytes()).await?;
         stdout.write_all(&output.stderr).await?;
+        stdout.flush().await?;
     }
     Ok(())
 }
@@ -98,14 +101,15 @@ async fn download_link(link: &str) -> Result<Output> {
         Command::new("/usr/bin/env")
             .arg("bash")
             .arg("-c")
-            .args(&[format!("yt-dlp --referer 'https://www.dropout.tv/' --netrc --format 'best' {} -P binaries", link)])
+            .args(&[format!("yt-dlp --referer 'https://www.dropout.tv/' --netrc -P binaries --write-subs {link}")])
             .output()
             .await?,
     )
 }
 
+#[allow(dead_code)]
 async fn start_geckodriver() -> Result<Child> {
-    Command::new("/home/aditya/.nix-profile/bin/killall").output().await.wrap_err("cannot killall")?;
+    Command::new("/usr/bin/env").arg("killall").output().await.wrap_err("cannot killall")?;
     let child = Command::new("/home/aditya/.nix-profile/bin/geckodriver")
         .spawn()?;
     Ok(child)
@@ -127,6 +131,12 @@ async fn grab_links() -> Result<Vec<String>> {
 async fn grab_links_grab(driver: &WebDriver) -> Result<Vec<String>> {
     {
         driver.goto(dropout("/login")).await?;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let accept_cookies = driver.find(By::Css("button[data-nav='eyJleHBlcmllbmNlIjoia2V0Y2gtY29uc2VudC1iYW5uZXIiLCJuYXYtaW5kZXgiOjJ9']")).await?;
+        accept_cookies.wait_until().displayed().await?;
+        accept_cookies.wait_until().enabled().await?;
+        accept_cookies.wait_until().clickable().await?;
+        accept_cookies.click().await?;
         let email_enter = driver.find(By::Id("signin-email-input")).await?;
         email_enter.send_keys(EMAIL).await?;
         let email_click = driver.find(By::Id("signin-email-submit")).await?;
@@ -151,8 +161,6 @@ async fn grab_links_grab(driver: &WebDriver) -> Result<Vec<String>> {
             ).await?;
         links.append(&mut dimension_twenty_links)
     }
-
-    println!("logged in");
 
     Ok(links)
 }
