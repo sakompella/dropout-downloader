@@ -1,4 +1,8 @@
 target/
 binaries/
-links.json
+*.json
 .direnv/
+.DS_store
+.idea/
+d20/
+gc/
