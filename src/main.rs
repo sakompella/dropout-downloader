@@ -1,12 +1,12 @@
 #!/usr/bin/env nix-shell
 //! ```cargo
 //! [dependencies]
-//! thirtyfour = { version = "0.32.0-rc.8", default-features = false, features = ["rustls-tls"] }
+//! thirtyfour = { version = "^0.32.0-rc.8", default-features = false, features = ["rustls-tls"] }
 //! tokio = { version = "1", features = ["full"] }
-//! reqwest = { version = "0.11.18", default-features = false, features = ["json", "rustls"] }
 //! serde = { version = "1", features = ["derive"] }
-//! serde_json = "1.0.104"
+//! serde_json = "1"
 //! color-eyre = "0.6.2"
+//! clap = { version = "4", features = ["derive"] }
 //! ```
 /*
 #! nix-shell -i rust-script -p rustc -p rust-script -p cargo -p yt-dlp -p geckodriver
@@ -19,6 +19,8 @@ use color_eyre::{
     Result,
 };
 use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
+use clap::Parser;
+use color_eyre::owo_colors::OwoColorize;
 use thirtyfour::prelude::*;
 use tokio::{
     io::AsyncWriteExt,
@@ -26,40 +28,61 @@ use tokio::{
     sync::Semaphore,
     task::JoinSet,
 };
+use tokio::time::sleep;
+
+#[derive(clap::Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Subcommand
+}
+
+#[derive(clap::Subcommand)]
+enum Subcommand {
+    Grab {
+        grab_type: GrabType,
+        links_path: PathBuf
+    },
+    Download {
+        links_path: PathBuf,
+        output_dir: PathBuf,
+    }
+}
+
+enum GrabType {
+    D20,
+    GC,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let mut args = dbg!(std::env::args());
-    args.next();
-    let cmd = args.next();
-    let next_arg = args.next();
-    if let Some(arg) = cmd {
-        match arg.as_str() {
-            "grab" => {
-                let links = grab_links(next_arg).await?;
-                let links_struct = Links { links };
-                let str = serde_json::to_string(&links_struct)?;
-                let links_path = dbg!(args.next()).unwrap_or_else(|| String::from("links.json"));
-                let mut file = tokio::fs::File::create(links_path).await?;
-                file.write_all(str.as_bytes()).await?;
-                Ok(())
-            }
-            "download" => download(next_arg, args.next()).await,
-            s => Err(eyre!("{s:?} neither??")),
+    let cli_args = Cli::parse();
+    match cli_args.command {
+        Subcommand::Grab { grab_type, links_path } => {
+            let links = grab_links(grab_type).await?;
+            let links_struct = Links { links };
+            let str = serde_json::to_string(&links_struct)?;
+            let mut file = tokio::fs::File::create(links_path).await?;
+            file.write_all(str.as_bytes()).await?;
         }
-    } else {
-        Err(eyre!("no arg!"))
+        Subcommand::Download { links_path, output_dir } => {
+            match Command::new("yt-dlp").spawn() {
+                Ok(_) => println!("yt-dlp found on path"),
+                Err(e) => bail!("yt-dlp not found on path: {e:?}"),
+            }
+            download(links_path, output_dir).await?;
+        }
     }
+    Ok(())
 }
 
 const D20_SEASONS: u8 = 24;
 const GC_SEASONS: u8 = 6;
 
-async fn download(links_file: Option<String>, download_path: Option<String>) -> Result<()> {
+async fn download(links_file: PathBuf, download_path: PathBuf) -> Result<()> {
     let links = {
-        let path = PathBuf::from(links_file.unwrap_or_else(|| String::from("links.json")));
+        let path = PathBuf::from(links_file);
         dbg!(&path.canonicalize());
         let links_str = tokio::fs::read_to_string(path).await?;
         let Links { links } = serde_json::from_str(&links_str)?;
@@ -76,11 +99,10 @@ struct Links {
     links: Vec<String>,
 }
 
-async fn download_all_links(links: Vec<String>, download_path: Option<String>) -> Result<()> {
-    let download_path = download_path.unwrap_or_else(|| String::from("binaries"));
-    {
-        let _ = dbg!(PathBuf::from(&download_path).canonicalize());
+async fn download_all_links(links: Vec<String>, download_path: PathBuf) -> Result<()> {
+    if !download_path.is_dir() {
         tokio::fs::create_dir_all(&download_path).await?;
+        let _ = dbg!(PathBuf::from(&download_path).canonicalize());
     }
     let download_path = Arc::new(download_path);
 
@@ -90,12 +112,14 @@ async fn download_all_links(links: Vec<String>, download_path: Option<String>) -
         if !link.contains("dropout.tv") {
             continue;
         }
-        let semaphore = semaphore.clone();
-        let permit = semaphore.acquire_owned().await?;
         tasks_set.spawn({
             let download_path = download_path.clone();
+            let semaphore = semaphore.clone();
             async move {
+                println!("{}{}", "spawned ".yellow(), &link.yellow());
+                let permit = semaphore.acquire_owned().await?;
                 let result = download_link(&link, download_path).await?;
+                println!("done running");
                 drop(permit);
                 Ok::<_, color_eyre::Report>((result, link))
             }
@@ -106,24 +130,24 @@ async fn download_all_links(links: Vec<String>, download_path: Option<String>) -
         let (output, link) = result??;
         if output.status.success() {
             stdout
-                .write_all(format!("success! {link}").as_bytes())
+                .write_all(format!("success! \"{link}\"\n").green().to_string().as_bytes())
+                .await?
+        } else {
+            // failure
+            stdout
+                .write_all(format!("failure for link \"{link}\" ! \n").red().to_string().as_bytes())
                 .await?;
-            stdout.flush().await?;
-            continue;
+            stdout.write_all(&output.stderr).await?;
         }
-
-        // failure
-        stdout
-            .write_all(format!("failure for link \"{link}\" ! \n").as_bytes())
-            .await?;
-        stdout.write_all(&output.stderr).await?;
+        stdout.write_all(b"\n").await?;
         stdout.flush().await?;
     }
     Ok(())
 }
 
-async fn download_link(link: &str, path: Arc<String>) -> Result<Output> {
-    println!("running {link}");
+async fn download_link(link: &str, path: Arc<PathBuf>) -> Result<Output> {
+    println!("{}", format!("running \"{link}\"").bright_yellow().bold());
+    let path = path.to_string_lossy();
     Command::new("/usr/bin/env")
         .arg("bash")
         .arg("-c")
@@ -152,16 +176,16 @@ fn dropout(string: &str) -> String {
     format!("{DROPOUT_URL}{string}")
 }
 
-async fn grab_links(next_arg: Option<String>) -> Result<Vec<String>> {
+async fn grab_links(grab_type: GrabType) -> Result<Vec<String>> {
     let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await?;
-    let links_res = grab_links_grab(&driver, next_arg).await;
+    let links_res = grab_links_grab(&driver, grab_type).await;
     driver.quit().await?;
     links_res
 }
 
 async fn log_in(driver: &WebDriver) -> Result<()> {
     driver.goto(dropout("/login")).await?;
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    sleep(Duration::from_secs(10)).await;
     let accept_cookies = driver.find(By::Css("button[data-nav='eyJleHBlcmllbmNlIjoia2V0Y2gtY29uc2VudC1iYW5uZXIiLCJuYXYtaW5kZXgiOjJ9']")).await?;
     accept_cookies.wait_until().displayed().await?;
     accept_cookies.wait_until().enabled().await?;
@@ -179,17 +203,14 @@ async fn log_in(driver: &WebDriver) -> Result<()> {
     Ok(())
 }
 
-async fn grab_links_grab(driver: &WebDriver, next_arg: Option<String>) -> Result<Vec<String>> {
+async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<Vec<String>> {
     log_in(driver).await?;
     let mut links = vec![];
-    let next = next_arg.unwrap_or_else(|| String::from("gc"));
-    let (count, url_prefix) = match next.as_str() {
-        "gc" => (GC_SEASONS, "game-changer"),
-        "d20" => (D20_SEASONS, "dimension-20"),
-        _ => bail!("invalid arg: {next} {:#?}", std::env::args()),
+    let (count, url_prefix) = match next_arg {
+        GrabType::GC => (D20_SEASONS, "dimension-20"),
+        GrabType::D20 => (GC_SEASONS, "game-changer"),
     };
 
-    // for i in 1..=D20_SEASONS {
     for i in 1..=count {
         let mut dimension_twenty_links = get_links_season(
             dbg!(dropout(format!("/{url_prefix}/season:{i}").as_str())).as_str(),
@@ -205,7 +226,7 @@ async fn grab_links_grab(driver: &WebDriver, next_arg: Option<String>) -> Result
 async fn get_links_season(season_url: &str, driver: &WebDriver) -> Result<Vec<String>> {
     let mut links = vec![];
     driver.goto(season_url).await?;
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    sleep(Duration::from_secs(20)).await;
     let episodes = driver.find_all(By::ClassName("browse-item-link")).await?;
     if episodes.is_empty() {
         bail!("invalid number of episodes");
