@@ -19,7 +19,7 @@ use color_eyre::{
     Result,
 };
 use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use color_eyre::owo_colors::OwoColorize;
 use thirtyfour::prelude::*;
 use tokio::{
@@ -33,21 +33,25 @@ use tokio::{
 #[derive(clap::Parser)]
 struct Cli {
     #[command(subcommand)]
-    command: Subcommand
+    command: Subcommand,
 }
 
-#[derive(clap::Subcommand)]
+#[derive(clap::Subcommand, Clone)]
 enum Subcommand {
     Grab {
+        #[arg(value_enum)]
         grab_type: GrabType,
         links_path: PathBuf
     },
     Download {
         links_path: PathBuf,
         output_dir: PathBuf,
+        #[arg(long)]
+        threads: Option<usize>,
     }
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum GrabType {
     D20,
     GC,
@@ -58,6 +62,7 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     let cli_args = Cli::parse();
+
     match cli_args.command {
         Subcommand::Grab { grab_type, links_path } => {
             let links = grab_links(grab_type).await?;
@@ -66,12 +71,16 @@ async fn main() -> Result<()> {
             let mut file = tokio::fs::File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
-        Subcommand::Download { links_path, output_dir } => {
+        Subcommand::Download { links_path, output_dir, threads } => {
             match Command::new("yt-dlp").spawn() {
                 Ok(_) => println!("yt-dlp found on path"),
                 Err(e) => bail!("yt-dlp not found on path: {e:?}"),
             }
-            download(links_path, output_dir).await?;
+            let threads = threads.unwrap_or(2);
+            if threads == 0 {
+                bail!("no threads to download");
+            }
+            download(links_path, output_dir, threads).await?;
         }
     }
     Ok(())
@@ -80,15 +89,15 @@ async fn main() -> Result<()> {
 const D20_SEASONS: u8 = 24;
 const GC_SEASONS: u8 = 6;
 
-async fn download(links_file: PathBuf, download_path: PathBuf) -> Result<()> {
+async fn download(links_file: PathBuf, download_path: PathBuf, threads: usize) -> Result<()> {
     let links = {
-        let path = PathBuf::from(links_file);
+        let path = links_file;
         dbg!(&path.canonicalize());
         let links_str = tokio::fs::read_to_string(path).await?;
         let Links { links } = serde_json::from_str(&links_str)?;
         links
     };
-    download_all_links(links, download_path)
+    download_all_links(links, download_path, threads)
         .await
         .wrap_err("could not download")?;
     Ok(())
@@ -99,14 +108,14 @@ struct Links {
     links: Vec<String>,
 }
 
-async fn download_all_links(links: Vec<String>, download_path: PathBuf) -> Result<()> {
+async fn download_all_links(links: Vec<String>, download_path: PathBuf, threads: usize) -> Result<()> {
     if !download_path.is_dir() {
         tokio::fs::create_dir_all(&download_path).await?;
         let _ = dbg!(PathBuf::from(&download_path).canonicalize());
     }
     let download_path = Arc::new(download_path);
 
-    let semaphore = Arc::new(Semaphore::new(2));
+    let semaphore = Arc::new(Semaphore::new(threads));
     let mut tasks_set = JoinSet::new();
     for link in links {
         if !link.contains("dropout.tv") {
@@ -120,6 +129,7 @@ async fn download_all_links(links: Vec<String>, download_path: PathBuf) -> Resul
                 let permit = semaphore.acquire_owned().await?;
                 let result = download_link(&link, download_path).await?;
                 println!("done running");
+                sleep(Duration::from_secs(60)).await;
                 drop(permit);
                 Ok::<_, color_eyre::Report>((result, link))
             }
@@ -131,7 +141,7 @@ async fn download_all_links(links: Vec<String>, download_path: PathBuf) -> Resul
         if output.status.success() {
             stdout
                 .write_all(format!("success! \"{link}\"\n").green().to_string().as_bytes())
-                .await?
+                .await?;
         } else {
             // failure
             stdout
