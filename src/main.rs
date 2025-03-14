@@ -27,8 +27,8 @@ use tokio::{
     process::{Child, Command},
     sync::Semaphore,
     task::JoinSet,
+    time::sleep,
 };
-use tokio::time::sleep;
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -243,51 +243,6 @@ async fn get_links_season(season_url: &str, driver: &WebDriver) -> Result<Vec<St
     }
     Ok(links)
 }
-
-/*
-// for animepahe only
-
-#[inline]
-fn animepahe(str: &str) -> String {
-    String::from("https://animepahe.ru") + str
-}
-
-async fn grab_links() -> Result<()> {
-    let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await.wrap_err("could not start ")?;
-    let tools = FirefoxTools::new(driver.handle.clone());
-    tools.install_addon("/home/aditya/Downloads/ublock.signed.xpi", None).await?;
-    driver.goto(dbg!(animepahe("/anime/f6b763ce-aaf7-50c8-2bd0-a7e5dd9d4445"))).await?;
-
-    tokio::time::sleep(std::time::Duration::new(5, 0)).await;
-
-    let links = driver.find_all(By::ClassName("play")).await?;
-
-    println!("total {}", links.len());
-
-    for (index, link) in links.into_iter().enumerate() {
-        println!("element {index}");
-        let link = link.attr("href").await?.ok_or_else(|| eyre!("no href attr"))?;
-        println!("{link}");
-        driver.goto(link).await?;
-        println!("waiting...");
-        tokio::time::sleep(std::time::Duration::new(5, 0)).await;
-        println!("done");
-        driver.find(By::Id("downloadMenu")).await?.click().await?;
-        let dropdown_items = driver.find_all(By::ClassName("dropdown-item")).await?;
-        for item in dropdown_items.into_iter().rev() {
-
-            // dbg!(item);
-        }
-    }
-
-    println!("done!!!");
-
-    tokio::time::sleep(std::time::Duration::new(300, 0)).await;
-
-    driver.quit().await?;
-    Ok(())
-}
- */
 
 const PASSWORD: &str = "Aditya99*3";
 const EMAIL: &str = "adityakomp@gmail.com";
