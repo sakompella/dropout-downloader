@@ -29,7 +29,7 @@ use tokio::{
     fs::File,
     io::AsyncWriteExt,
     process::{Child, Command},
-    sync::{Mutex, Semaphore},
+    sync::Semaphore,
     task::JoinSet,
     time::sleep,
 };
@@ -157,7 +157,7 @@ async fn download_all_links(
         let completed_links = completed_links.unwrap_or_else(Vec::new);
         fs::remove_file(&completed_path).await?;
         Some((
-            Mutex::new(File::create(&completed_path).await?),
+            File::create(&completed_path).await?,
             completed_links,
         ))
     } else {
@@ -199,10 +199,8 @@ async fn download_all_links(
                 if !completed_links.contains(&link) {
                     completed_links.push(link.clone());
                 };
-                let mut lock = file.lock().await;
-                lock.set_len(0).await?;
-                lock.write_all(str.as_bytes()).await?;
-                drop(lock);
+                file.set_len(0).await?;
+                file.write_all(str.as_bytes()).await?;
             }
             stdout
                 .write_all(
