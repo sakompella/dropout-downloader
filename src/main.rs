@@ -47,6 +47,8 @@ enum Subcommand {
         links_path: PathBuf,
         output_dir: PathBuf,
         #[arg(long)]
+        slowdown: Option<u64>,
+        #[arg(long)]
         threads: Option<usize>,
     }
 }
@@ -71,7 +73,7 @@ async fn main() -> Result<()> {
             let mut file = tokio::fs::File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
-        Subcommand::Download { links_path, output_dir, threads } => {
+        Subcommand::Download { links_path, output_dir, threads, slowdown} => {
             match Command::new("yt-dlp").spawn() {
                 Ok(_) => println!("yt-dlp found on path"),
                 Err(e) => bail!("yt-dlp not found on path: {e:?}"),
@@ -80,7 +82,7 @@ async fn main() -> Result<()> {
             if threads == 0 {
                 bail!("no threads to download");
             }
-            download(links_path, output_dir, threads).await?;
+            download(links_path, output_dir, threads, slowdown.unwrap_or(30)).await?;
         }
     }
     Ok(())
@@ -89,7 +91,7 @@ async fn main() -> Result<()> {
 const D20_SEASONS: u8 = 24;
 const GC_SEASONS: u8 = 6;
 
-async fn download(links_file: PathBuf, download_path: PathBuf, threads: usize) -> Result<()> {
+async fn download(links_file: PathBuf, download_path: PathBuf, threads: usize, secs_slowdown: u64) -> Result<()> {
     let links = {
         let path = links_file;
         dbg!(&path.canonicalize());
@@ -97,7 +99,7 @@ async fn download(links_file: PathBuf, download_path: PathBuf, threads: usize) -
         let Links { links } = serde_json::from_str(&links_str)?;
         links
     };
-    download_all_links(links, download_path, threads)
+    download_all_links(links, download_path, threads, secs_slowdown)
         .await
         .wrap_err("could not download")?;
     Ok(())
@@ -108,7 +110,7 @@ struct Links {
     links: Vec<String>,
 }
 
-async fn download_all_links(links: Vec<String>, download_path: PathBuf, threads: usize) -> Result<()> {
+async fn download_all_links(links: Vec<String>, download_path: PathBuf, threads: usize, secs: u64) -> Result<()> {
     if !download_path.is_dir() {
         tokio::fs::create_dir_all(&download_path).await?;
         let _ = dbg!(PathBuf::from(&download_path).canonicalize());
@@ -125,11 +127,10 @@ async fn download_all_links(links: Vec<String>, download_path: PathBuf, threads:
             let download_path = download_path.clone();
             let semaphore = semaphore.clone();
             async move {
-                println!("{}{}", "spawned ".yellow(), &link.yellow());
                 let permit = semaphore.acquire_owned().await?;
                 let result = download_link(&link, download_path).await?;
-                println!("done running");
-                sleep(Duration::from_secs(60)).await;
+                println!("done running, slowing...");
+                sleep(Duration::from_secs(secs)).await;
                 drop(permit);
                 Ok::<_, color_eyre::Report>((result, link))
             }
