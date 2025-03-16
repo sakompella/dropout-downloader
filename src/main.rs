@@ -20,12 +20,16 @@ use color_eyre::{
     owo_colors::OwoColorize,
     Result,
 };
-use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet, ops::Sub, path::PathBuf, process::Output, sync::Arc, time::Duration,
+};
 use thirtyfour::prelude::*;
 use tokio::{
+    fs,
+    fs::File,
     io::AsyncWriteExt,
     process::{Child, Command},
-    sync::Semaphore,
+    sync::{Mutex, Semaphore},
     task::JoinSet,
     time::sleep,
 };
@@ -46,6 +50,8 @@ enum Subcommand {
     Download {
         links_path: PathBuf,
         output_dir: PathBuf,
+        #[arg(long)]
+        completed: Option<PathBuf>,
         #[arg(long)]
         slowdown: Option<u64>,
         #[arg(long)]
@@ -71,14 +77,14 @@ async fn main() -> Result<()> {
             links_path,
         } => {
             let links = grab_links(grab_type).await?;
-            let links_struct = Links { links };
-            let str = serde_json::to_string(&links_struct)?;
-            let mut file = tokio::fs::File::create(links_path).await?;
+            let str = serde_json::to_string(&links)?;
+            let mut file = File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
         Subcommand::Download {
             links_path,
             output_dir,
+            completed,
             threads,
             slowdown,
         } => {
@@ -90,7 +96,14 @@ async fn main() -> Result<()> {
             if threads == 0 {
                 bail!("no threads to download");
             }
-            download(links_path, output_dir, threads, slowdown.unwrap_or(30)).await?;
+            download(
+                links_path,
+                output_dir,
+                threads,
+                slowdown.unwrap_or(30),
+                completed,
+            )
+            .await?;
         }
     }
     Ok(())
@@ -104,36 +117,58 @@ async fn download(
     download_path: PathBuf,
     threads: usize,
     secs_slowdown: u64,
+    completed: Option<PathBuf>,
 ) -> Result<()> {
     let links = {
         let path = links_file;
         dbg!(&path.canonicalize());
-        let links_str = tokio::fs::read_to_string(path).await?;
-        let Links { links } = serde_json::from_str(&links_str)?;
-        links
+        let links_str = fs::read_to_string(path).await?;
+        serde_json::from_str(&links_str)?
     };
-    download_all_links(links, download_path, threads, secs_slowdown)
+    download_all_links(links, download_path, threads, secs_slowdown, completed)
         .await
         .wrap_err("could not download")?;
     Ok(())
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Links {
-    links: Vec<String>,
-}
-
 async fn download_all_links(
-    links: Vec<String>,
+    links: HashSet<String>,
     download_path: PathBuf,
     threads: usize,
     secs: u64,
+    completed: Option<PathBuf>,
 ) -> Result<()> {
     if !download_path.is_dir() {
-        tokio::fs::create_dir_all(&download_path).await?;
+        fs::create_dir_all(&download_path).await?;
         let _ = dbg!(PathBuf::from(&download_path).canonicalize());
     }
     let download_path = Arc::new(download_path);
+
+    let mut completed = if let Some(completed_path) = &completed {
+        let completed_links = if completed_path.is_file() {
+            let content = fs::read_to_string(completed_path).await?;
+            serde_json::from_str(&content).ok()
+        } else {
+            if let Some(parent) = completed_path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            None
+        };
+        let completed_links = completed_links.unwrap_or_else(HashSet::new);
+        fs::remove_file(&completed_path).await?;
+        Some((
+            Mutex::new(File::create(&completed_path).await?),
+            completed_links,
+        ))
+    } else {
+        None
+    };
+
+    let links = if let Some((_, completed_links)) = completed.as_mut() {
+        links.sub(completed_links)
+    } else {
+        links
+    };
 
     let semaphore = Arc::new(Semaphore::new(threads));
     let mut tasks_set = JoinSet::new();
@@ -154,10 +189,19 @@ async fn download_all_links(
             }
         });
     }
+
     let mut stdout = tokio::io::stdout();
     while let Some(result) = tasks_set.join_next().await {
         let (output, link) = result??;
         if output.status.success() {
+            if let Some((file, links)) = completed.as_mut() {
+                let str = serde_json::to_string_pretty(links)?;
+                links.insert(link.clone());
+                let mut lock = file.lock().await;
+                lock.set_len(0).await?;
+                lock.write_all(str.as_bytes()).await?;
+                drop(lock);
+            }
             stdout
                 .write_all(
                     format!("success! \"{link}\"\n")
@@ -215,7 +259,7 @@ fn dropout(string: &str) -> String {
     format!("{DROPOUT_URL}{string}")
 }
 
-async fn grab_links(grab_type: GrabType) -> Result<Vec<String>> {
+async fn grab_links(grab_type: GrabType) -> Result<HashSet<String>> {
     let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await?;
     let links_res = grab_links_grab(&driver, grab_type).await;
     driver.quit().await?;
@@ -242,9 +286,9 @@ async fn log_in(driver: &WebDriver) -> Result<()> {
     Ok(())
 }
 
-async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<Vec<String>> {
+async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<HashSet<String>> {
     log_in(driver).await?;
-    let mut links = vec![];
+    let mut links = Vec::new();
     let (count, url_prefix) = match next_arg {
         GrabType::GC => (D20_SEASONS, "dimension-20"),
         GrabType::D20 => (GC_SEASONS, "game-changer"),
@@ -258,6 +302,8 @@ async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<Vec<S
         .await?;
         links.append(&mut dimension_twenty_links);
     }
+
+    let links = links.into_iter().collect();
 
     Ok(links)
 }
