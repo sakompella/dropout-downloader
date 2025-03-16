@@ -14,13 +14,13 @@
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::style)]
 #![deny(unused_must_use)]
+use clap::{Parser, ValueEnum};
 use color_eyre::{
     eyre::{bail, eyre, WrapErr},
+    owo_colors::OwoColorize,
     Result,
 };
 use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
-use clap::{Parser, ValueEnum};
-use color_eyre::owo_colors::OwoColorize;
 use thirtyfour::prelude::*;
 use tokio::{
     io::AsyncWriteExt,
@@ -41,7 +41,7 @@ enum Subcommand {
     Grab {
         #[arg(value_enum)]
         grab_type: GrabType,
-        links_path: PathBuf
+        links_path: PathBuf,
     },
     Download {
         links_path: PathBuf,
@@ -50,7 +50,7 @@ enum Subcommand {
         slowdown: Option<u64>,
         #[arg(long)]
         threads: Option<usize>,
-    }
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -66,14 +66,22 @@ async fn main() -> Result<()> {
     let cli_args = Cli::parse();
 
     match cli_args.command {
-        Subcommand::Grab { grab_type, links_path } => {
+        Subcommand::Grab {
+            grab_type,
+            links_path,
+        } => {
             let links = grab_links(grab_type).await?;
             let links_struct = Links { links };
             let str = serde_json::to_string(&links_struct)?;
             let mut file = tokio::fs::File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
-        Subcommand::Download { links_path, output_dir, threads, slowdown} => {
+        Subcommand::Download {
+            links_path,
+            output_dir,
+            threads,
+            slowdown,
+        } => {
             match Command::new("yt-dlp").spawn() {
                 Ok(_) => println!("yt-dlp found on path"),
                 Err(e) => bail!("yt-dlp not found on path: {e:?}"),
@@ -91,7 +99,12 @@ async fn main() -> Result<()> {
 const D20_SEASONS: u8 = 24;
 const GC_SEASONS: u8 = 6;
 
-async fn download(links_file: PathBuf, download_path: PathBuf, threads: usize, secs_slowdown: u64) -> Result<()> {
+async fn download(
+    links_file: PathBuf,
+    download_path: PathBuf,
+    threads: usize,
+    secs_slowdown: u64,
+) -> Result<()> {
     let links = {
         let path = links_file;
         dbg!(&path.canonicalize());
@@ -110,7 +123,12 @@ struct Links {
     links: Vec<String>,
 }
 
-async fn download_all_links(links: Vec<String>, download_path: PathBuf, threads: usize, secs: u64) -> Result<()> {
+async fn download_all_links(
+    links: Vec<String>,
+    download_path: PathBuf,
+    threads: usize,
+    secs: u64,
+) -> Result<()> {
     if !download_path.is_dir() {
         tokio::fs::create_dir_all(&download_path).await?;
         let _ = dbg!(PathBuf::from(&download_path).canonicalize());
@@ -141,12 +159,22 @@ async fn download_all_links(links: Vec<String>, download_path: PathBuf, threads:
         let (output, link) = result??;
         if output.status.success() {
             stdout
-                .write_all(format!("success! \"{link}\"\n").green().to_string().as_bytes())
+                .write_all(
+                    format!("success! \"{link}\"\n")
+                        .green()
+                        .to_string()
+                        .as_bytes(),
+                )
                 .await?;
         } else {
             // failure
             stdout
-                .write_all(format!("failure for link \"{link}\" ! \n").red().to_string().as_bytes())
+                .write_all(
+                    format!("failure for link \"{link}\" ! \n")
+                        .red()
+                        .to_string()
+                        .as_bytes(),
+                )
                 .await?;
             stdout.write_all(&output.stderr).await?;
         }
