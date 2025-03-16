@@ -21,7 +21,7 @@ use color_eyre::{
     Result,
 };
 use std::{
-    collections::HashSet, ops::Sub, path::PathBuf, process::Output, sync::Arc, time::Duration,
+    path::PathBuf, process::Output, sync::Arc, time::Duration,
 };
 use thirtyfour::prelude::*;
 use tokio::{
@@ -132,7 +132,7 @@ async fn download(
 }
 
 async fn download_all_links(
-    links: HashSet<String>,
+    links: Vec<String>,
     download_path: PathBuf,
     threads: usize,
     secs: u64,
@@ -154,7 +154,7 @@ async fn download_all_links(
             }
             None
         };
-        let completed_links = completed_links.unwrap_or_else(HashSet::new);
+        let completed_links = completed_links.unwrap_or_else(Vec::new);
         fs::remove_file(&completed_path).await?;
         Some((
             Mutex::new(File::create(&completed_path).await?),
@@ -165,7 +165,7 @@ async fn download_all_links(
     };
 
     let links = if let Some((_, completed_links)) = completed.as_mut() {
-        links.sub(completed_links)
+        links.into_iter().filter(|link| !completed_links.contains(link)).collect()
     } else {
         links
     };
@@ -194,9 +194,11 @@ async fn download_all_links(
     while let Some(result) = tasks_set.join_next().await {
         let (output, link) = result??;
         if output.status.success() {
-            if let Some((file, links)) = completed.as_mut() {
-                let str = serde_json::to_string_pretty(links)?;
-                links.insert(link.clone());
+            if let Some((file, completed_links)) = completed.as_mut() {
+                let str = serde_json::to_string_pretty(completed_links)?;
+                if !completed_links.contains(&link) {
+                    completed_links.push(link.clone());
+                };
                 let mut lock = file.lock().await;
                 lock.set_len(0).await?;
                 lock.write_all(str.as_bytes()).await?;
@@ -259,7 +261,7 @@ fn dropout(string: &str) -> String {
     format!("{DROPOUT_URL}{string}")
 }
 
-async fn grab_links(grab_type: GrabType) -> Result<HashSet<String>> {
+async fn grab_links(grab_type: GrabType) -> Result<Vec<String>> {
     let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await?;
     let links_res = grab_links_grab(&driver, grab_type).await;
     driver.quit().await?;
@@ -286,7 +288,7 @@ async fn log_in(driver: &WebDriver) -> Result<()> {
     Ok(())
 }
 
-async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<HashSet<String>> {
+async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<Vec<String>> {
     log_in(driver).await?;
     let mut links = Vec::new();
     let (count, url_prefix) = match next_arg {
@@ -302,8 +304,6 @@ async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<HashS
         .await?;
         links.append(&mut dimension_twenty_links);
     }
-
-    let links = links.into_iter().collect();
 
     Ok(links)
 }
