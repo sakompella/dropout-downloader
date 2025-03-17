@@ -145,19 +145,26 @@ async fn download_all_links(
     let download_path = Arc::new(download_path);
 
     let mut completed = if let Some(completed_path) = &completed {
+        dbg!(&completed_path);
         let completed_links = if completed_path.is_file() {
             let content = fs::read_to_string(completed_path).await?;
-            serde_json::from_str(&content).ok()
+            dbg!(&content);
+            fs::remove_file(&completed_path).await?;
+            dbg!(serde_json::from_str(&content).ok())
         } else {
             if let Some(parent) = completed_path.parent() {
+                dbg!(&parent);
                 fs::create_dir_all(parent).await?;
             }
             None
         };
         let completed_links = completed_links.unwrap_or_else(Vec::new);
-        fs::remove_file(&completed_path).await?;
+        let mut file = File::create(&completed_path).await?;
+        if completed_path.is_file() {
+            file.write_all(serde_json::to_string_pretty(&completed_links)?.as_bytes()).await?;
+        }
         Some((
-            File::create(&completed_path).await?,
+            file,
             completed_links,
         ))
     } else {
