@@ -20,9 +20,7 @@ use color_eyre::{
     owo_colors::OwoColorize,
     Result,
 };
-use std::{
-    path::PathBuf, process::Output, sync::Arc, time::Duration,
-};
+use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
 use thirtyfour::prelude::*;
 use tokio::{
     fs,
@@ -161,18 +159,19 @@ async fn download_all_links(
         let completed_links = completed_links.unwrap_or_else(Vec::new);
         let mut file = File::create(&completed_path).await?;
         if completed_path.is_file() {
-            file.write_all(serde_json::to_string_pretty(&completed_links)?.as_bytes()).await?;
+            file.write_all(serde_json::to_string_pretty(&completed_links)?.as_bytes())
+                .await?;
         }
-        Some((
-            file,
-            completed_links,
-        ))
+        Some((file, completed_links))
     } else {
         None
     };
 
     let links = if let Some((_, completed_links)) = completed.as_mut() {
-        links.into_iter().filter(|link| !completed_links.contains(link)).collect()
+        links
+            .into_iter()
+            .filter(|link| !completed_links.contains(link))
+            .collect()
     } else {
         links
     };
