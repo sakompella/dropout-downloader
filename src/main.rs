@@ -120,7 +120,7 @@ async fn download(
     let links = {
         let path = links_file;
         dbg!(&path.canonicalize());
-        let links_str = fs::read_to_string(path).await?;
+        let links_str = fs::read_to_string(path).await?.trim_matches(char::from(0));
         serde_json::from_str(&links_str)?
     };
     download_all_links(links, download_path, threads, secs_slowdown, completed)
@@ -159,7 +159,7 @@ async fn download_all_links(
         let completed_links = completed_links.unwrap_or_else(Vec::new);
         let mut file = File::create(&completed_path).await?;
         if completed_path.is_file() {
-            file.write_all(serde_json::to_string_pretty(&completed_links)?.as_bytes())
+            file.write_all(serde_json::to_string(&completed_links)?.as_bytes())
                 .await?;
         }
         Some((file, completed_links))
@@ -205,7 +205,6 @@ async fn download_all_links(
                 if !completed_links.contains(&link) {
                     completed_links.push(link.clone());
                 };
-                file.set_len(0).await?;
                 file.write_all(str.as_bytes()).await?;
             }
             stdout
