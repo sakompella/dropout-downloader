@@ -54,6 +54,8 @@ enum Subcommand {
         slowdown: Option<u64>,
         #[arg(long)]
         threads: Option<usize>,
+        #[arg(long = "yt-dlp")]
+        yt_dlp_path: Option<PathBuf>,
     },
 }
 
@@ -85,8 +87,10 @@ async fn main() -> Result<()> {
             completed,
             threads,
             slowdown,
+            yt_dlp_path,
         } => {
-            match Command::new("yt-dlp").spawn() {
+            let yt_dlp_path = yt_dlp_path.unwrap_or_else(|| PathBuf::from("yt-dlp"));
+            match Command::new(&yt_dlp_path).output().await {
                 Ok(_) => println!("yt-dlp found on path"),
                 Err(e) => bail!("yt-dlp not found on path: {e:?}"),
             }
@@ -100,6 +104,7 @@ async fn main() -> Result<()> {
                 threads,
                 slowdown.unwrap_or(30),
                 completed,
+                yt_dlp_path,
             )
             .await?;
         }
@@ -116,6 +121,7 @@ async fn download(
     threads: usize,
     secs_slowdown: u64,
     completed: Option<PathBuf>,
+    yt_dlp_path: PathBuf,
 ) -> Result<()> {
     let links = {
         let path = links_file;
@@ -123,9 +129,16 @@ async fn download(
         let links_str = fs::read_to_string(path).await?;
         serde_json::from_str(links_str.trim_matches(char::from(0)))?
     };
-    download_all_links(links, download_path, threads, secs_slowdown, completed)
-        .await
-        .wrap_err("could not download")?;
+    download_all_links(
+        links,
+        download_path,
+        threads,
+        secs_slowdown,
+        completed,
+        yt_dlp_path,
+    )
+    .await
+    .wrap_err("could not download")?;
     Ok(())
 }
 
@@ -135,6 +148,7 @@ async fn download_all_links(
     threads: usize,
     secs: u64,
     completed_path: Option<PathBuf>,
+    yt_dlp_path: PathBuf,
 ) -> Result<()> {
     if !download_path.is_dir() {
         fs::create_dir_all(&download_path).await?;
@@ -185,9 +199,10 @@ async fn download_all_links(
         tasks_set.spawn({
             let download_path = download_path.clone();
             let semaphore = semaphore.clone();
+            let yt_dlp_path = yt_dlp_path.clone();
             async move {
                 let permit = semaphore.acquire_owned().await?;
-                let result = download_link(&link, download_path).await?;
+                let result = download_link(&link, download_path, yt_dlp_path).await?;
                 println!("done running, slowing...");
                 sleep(Duration::from_secs(secs)).await;
                 drop(permit);
@@ -237,14 +252,15 @@ async fn download_all_links(
     Ok(())
 }
 
-async fn download_link(link: &str, path: Arc<PathBuf>) -> Result<Output> {
+async fn download_link(link: &str, path: Arc<PathBuf>, cmd_path: PathBuf) -> Result<Output> {
     println!("{}", format!("running \"{link}\"").bright_yellow().bold());
     let path = path.to_string_lossy();
     Command::new("/usr/bin/env")
         .arg("bash")
         .arg("-c")
         .args(&[format!(
-            "yt-dlp --referer 'https://www.dropout.tv/' --netrc -P {path} --write-subs {link}"
+            "{} --referer 'https://www.dropout.tv/' --netrc -P {path} --write-subs {link}",
+            cmd_path.to_string_lossy()
         )])
         .output()
         .await
