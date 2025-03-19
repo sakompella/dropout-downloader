@@ -220,7 +220,7 @@ async fn download_all_links(
                     .as_ref()
                     .expect("completed_path doesn't exist even though links does");
                 *file = File::create(completed_path).await?;
-                let str = serde_json::to_string_pretty(completed_links)?;
+                let str = serde_json::to_string(completed_links)?;
                 if !completed_links.contains(&link) {
                     completed_links.push(link.clone());
                 };
