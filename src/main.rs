@@ -352,5 +352,5 @@ async fn get_links_season(season_url: &str, driver: &WebDriver) -> Result<Vec<St
     Ok(links)
 }
 
-const PASSWORD: &str = "Aditya99*3";
-const EMAIL: &str = "adityakomp@gmail.com";
+const PASSWORD: &str = include!("../auth.in").1;
+const EMAIL: &str = include!("../auth.in").0;

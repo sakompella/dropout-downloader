@@ -6,3 +6,4 @@ binaries/
 .idea/
 d20/
 gc/
+auth.in
