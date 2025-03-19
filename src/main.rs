@@ -120,8 +120,8 @@ async fn download(
     let links = {
         let path = links_file;
         dbg!(&path.canonicalize());
-        let links_str = fs::read_to_string(path).await?.trim_matches(char::from(0));
-        serde_json::from_str(&links_str)?
+        let links_str = fs::read_to_string(path).await?;
+        serde_json::from_str(links_str.trim_matches(char::from(0)))?
     };
     download_all_links(links, download_path, threads, secs_slowdown, completed)
         .await
