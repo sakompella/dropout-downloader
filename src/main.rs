@@ -14,9 +14,9 @@
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::style)]
 #![deny(unused_must_use)]
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand};
 use color_eyre::{
-    eyre::{bail, eyre, WrapErr},
+    eyre::{bail, eyre, OptionExt, WrapErr},
     owo_colors::OwoColorize,
     Result,
 };
@@ -32,18 +32,19 @@ use tokio::{
     time::sleep,
 };
 
-#[derive(clap::Parser)]
+#[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
-    command: Subcommand,
+    command: Subcommands,
 }
 
-#[derive(clap::Subcommand, Clone)]
-enum Subcommand {
+#[derive(Subcommand, Clone)]
+enum Subcommands {
     Grab {
-        #[arg(value_enum)]
-        grab_type: GrabType,
+        grab: String,
         links_path: PathBuf,
+        #[arg(long)]
+        seasons: Option<u8>,
     },
     Download {
         links_path: PathBuf,
@@ -59,12 +60,6 @@ enum Subcommand {
     },
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum GrabType {
-    D20,
-    GC,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -72,16 +67,17 @@ async fn main() -> Result<()> {
     let cli_args = Cli::parse();
 
     match cli_args.command {
-        Subcommand::Grab {
-            grab_type,
+        Subcommands::Grab {
+            grab,
             links_path,
+            seasons,
         } => {
-            let links = grab_links(grab_type).await?;
+            let links = grab_links(grab, seasons).await?;
             let str = serde_json::to_string(&links)?;
             let mut file = File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
-        Subcommand::Download {
+        Subcommands::Download {
             links_path,
             output_dir,
             completed,
@@ -284,9 +280,9 @@ fn dropout(string: &str) -> String {
     format!("{DROPOUT_URL}{string}")
 }
 
-async fn grab_links(grab_type: GrabType) -> Result<Vec<String>> {
+async fn grab_links(grab: String, seasons: Option<u8>) -> Result<Vec<String>> {
     let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await?;
-    let links_res = grab_links_grab(&driver, grab_type).await;
+    let links_res = grab_links_grab(&driver, grab, seasons).await;
     driver.quit().await?;
     links_res
 }
@@ -311,12 +307,19 @@ async fn log_in(driver: &WebDriver) -> Result<()> {
     Ok(())
 }
 
-async fn grab_links_grab(driver: &WebDriver, next_arg: GrabType) -> Result<Vec<String>> {
+async fn grab_links_grab(
+    driver: &WebDriver,
+    next_arg: String,
+    seasons: Option<u8>,
+) -> Result<Vec<String>> {
     log_in(driver).await?;
     let mut links = Vec::new();
-    let (count, url_prefix) = match next_arg {
-        GrabType::GC => (D20_SEASONS, "dimension-20"),
-        GrabType::D20 => (GC_SEASONS, "game-changer"),
+    let (count, url_prefix) = match next_arg.as_str() {
+        "d20" => (D20_SEASONS, "dimension-20"),
+        "gc" => (GC_SEASONS, "game-changer"),
+        url => seasons
+            .map(|s| (s, url))
+            .ok_or_eyre("no seasons flag with arbitrary URL")?,
     };
 
     for i in 1..=count {
