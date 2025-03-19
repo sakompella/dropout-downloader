@@ -134,7 +134,7 @@ async fn download_all_links(
     download_path: PathBuf,
     threads: usize,
     secs: u64,
-    completed: Option<PathBuf>,
+    completed_path: Option<PathBuf>,
 ) -> Result<()> {
     if !download_path.is_dir() {
         fs::create_dir_all(&download_path).await?;
@@ -142,7 +142,7 @@ async fn download_all_links(
     }
     let download_path = Arc::new(download_path);
 
-    let mut completed = if let Some(completed_path) = &completed {
+    let mut completed = if let Some(completed_path) = &completed_path {
         dbg!(&completed_path);
         let completed_links = if completed_path.is_file() {
             let content = fs::read_to_string(completed_path).await?;
@@ -201,6 +201,10 @@ async fn download_all_links(
         let (output, link) = result??;
         if output.status.success() {
             if let Some((file, completed_links)) = completed.as_mut() {
+                let completed_path = completed_path
+                    .as_ref()
+                    .expect("completed_path doesn't exist even though links does");
+                *file = File::create(completed_path).await?;
                 let str = serde_json::to_string_pretty(completed_links)?;
                 if !completed_links.contains(&link) {
                     completed_links.push(link.clone());
