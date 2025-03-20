@@ -47,8 +47,12 @@ enum Subcommands {
         seasons: Option<u8>,
     },
     Download {
-        links_path: PathBuf,
-        output_dir: PathBuf,
+        #[arg(long = "links")]
+        links_path: Option<PathBuf>,
+        #[arg(long = "download")]
+        output_dir: Option<PathBuf>,
+        #[arg(long)]
+        total_dir: Option<PathBuf>,
         #[arg(long)]
         completed: Option<PathBuf>,
         #[arg(long)]
@@ -73,14 +77,15 @@ async fn main() -> Result<()> {
             seasons,
         } => {
             let links = grab_links(grab, seasons).await?;
-            let str = serde_json::to_string_pretty(&links)?;
+            let str = serde_json::to_string(&links)?;
             let mut file = File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
         Subcommands::Download {
-            links_path,
-            output_dir,
-            completed,
+            mut links_path,
+            mut output_dir,
+            total_dir,
+            mut completed,
             threads,
             slowdown,
             yt_dlp_path,
@@ -94,6 +99,17 @@ async fn main() -> Result<()> {
             if threads == 0 {
                 bail!("no threads to download");
             }
+            if let Some(total_dir) = total_dir {
+                if total_dir.is_dir() {
+                    links_path = Some(total_dir.join("links.json"));
+                    output_dir = Some(total_dir.join("downloads"));
+                    completed = Some(total_dir.join("complete.json"));
+                }
+            }
+            let (Some(links_path), Some(output_dir)) = (links_path.clone(), output_dir.clone())
+            else {
+                bail!("no links_path and output_dir: {links_path:?}, {output_dir:?}");
+            };
             download(
                 links_path,
                 output_dir,
@@ -198,7 +214,7 @@ async fn download_all_links(
     let semaphore = Arc::new(Semaphore::new(threads));
     let mut tasks_set = JoinSet::new();
     for (season_num, episodes_in_season) in links {
-        let season_download_path = download_path.join(season_num.to_string());
+        let season_download_path = download_path.join(&season_num);
         fs::create_dir_all(&season_download_path).await?;
         let season_download_path = Arc::new(season_download_path);
         for link in episodes_in_season {
