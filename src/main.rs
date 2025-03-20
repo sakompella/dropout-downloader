@@ -9,7 +9,7 @@
 //! clap = { version = "4", features = ["derive"] }
 //! ```
 /*
-#! nix-shell -i rust-script -p rustc -p rust-script -p cargo -p yt-dlp -p geckodriver
+#! nix-shell -i rust-script -p rustc -p rust-script -p cargo -p yt-dlp
 */
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::style)]
@@ -261,17 +261,6 @@ async fn download_link(link: &str, path: Arc<PathBuf>, cmd_path: PathBuf) -> Res
         .output()
         .await
         .map_err(Into::into)
-}
-
-#[allow(dead_code)]
-async fn start_geckodriver() -> Result<Child> {
-    Command::new("/usr/bin/env")
-        .arg("killall")
-        .output()
-        .await
-        .wrap_err("cannot killall")?;
-    let child = Command::new("/home/aditya/.nix-profile/bin/geckodriver").spawn()?;
-    Ok(child)
 }
 
 const DROPOUT_URL: &str = "https://www.dropout.tv";
