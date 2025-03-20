@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
             seasons,
         } => {
             let links = grab_links(grab, seasons).await?;
-            let str = serde_json::to_string(&links)?;
+            let str = serde_json::to_string_pretty(&links)?;
             let mut file = File::create(links_path).await?;
             file.write_all(str.as_bytes()).await?;
         }
@@ -139,7 +139,7 @@ async fn download(
 }
 
 async fn download_all_links(
-    links: HashMap<u8, Vec<String>>,
+    links: HashMap<String, Vec<String>>,
     download_path: PathBuf,
     threads: usize,
     secs: u64,
@@ -298,7 +298,7 @@ fn dropout(string: &str) -> String {
     format!("{DROPOUT_URL}{string}")
 }
 
-async fn grab_links(grab: String, seasons: Option<u8>) -> Result<HashMap<u8, Vec<String>>> {
+async fn grab_links(grab: String, seasons: Option<u8>) -> Result<HashMap<String, Vec<String>>> {
     let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await?;
     let links_res = grab_links_grab(&driver, grab, seasons).await;
     driver.quit().await?;
@@ -329,7 +329,7 @@ async fn grab_links_grab(
     driver: &WebDriver,
     next_arg: String,
     seasons: Option<u8>,
-) -> Result<HashMap<u8, Vec<String>>> {
+) -> Result<HashMap<String, Vec<String>>> {
     log_in(driver).await?;
     let (count, url_prefix) = match next_arg.as_str() {
         "d20" => (D20_SEASONS, "dimension-20"),
@@ -343,7 +343,7 @@ async fn grab_links_grab(
 
     for i in 1..=count {
         links.insert(
-            i,
+            i.to_string(),
             get_links_season(
                 dbg!(dropout(format!("/{url_prefix}/season:{i}").as_str())).as_str(),
                 driver,
