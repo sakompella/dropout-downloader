@@ -20,14 +20,14 @@ use color_eyre::{
     owo_colors::OwoColorize,
     Result,
 };
-use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, process::Output, sync::Arc, time::Duration};
 use thirtyfour::prelude::*;
 use tokio::{
     fs,
     fs::File,
     io::AsyncWriteExt,
-    process::{Child, Command},
-    sync::Semaphore,
+    process::Command,
+    sync::{Mutex, Semaphore},
     task::JoinSet,
     time::sleep,
 };
@@ -139,13 +139,15 @@ async fn download(
 }
 
 async fn download_all_links(
-    links: Vec<String>,
+    links: HashMap<u8, Vec<String>>,
     download_path: PathBuf,
     threads: usize,
     secs: u64,
     completed_path: Option<PathBuf>,
     yt_dlp_path: PathBuf,
 ) -> Result<()> {
+    let yt_dlp_path = Arc::new(yt_dlp_path);
+
     if !download_path.is_dir() {
         fs::create_dir_all(&download_path).await?;
         let _ = dbg!(PathBuf::from(&download_path).canonicalize());
@@ -158,7 +160,7 @@ async fn download_all_links(
             let content = fs::read_to_string(completed_path).await?;
             dbg!(&content);
             fs::remove_file(&completed_path).await?;
-            dbg!(serde_json::from_str(&content).ok())
+            dbg!(serde_json::from_str(content.trim_matches(char::from(0))).ok())
         } else {
             if let Some(parent) = completed_path.parent() {
                 dbg!(&parent);
@@ -180,7 +182,14 @@ async fn download_all_links(
     let links = if let Some((_, completed_links)) = completed.as_mut() {
         links
             .into_iter()
-            .filter(|link| !completed_links.contains(link))
+            .map(|(s, l)| {
+                (
+                    s,
+                    l.into_iter()
+                        .filter(|x| !completed_links.contains(x))
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect()
     } else {
         links
@@ -188,67 +197,87 @@ async fn download_all_links(
 
     let semaphore = Arc::new(Semaphore::new(threads));
     let mut tasks_set = JoinSet::new();
-    for link in links {
-        if !link.contains("dropout.tv") {
-            continue;
-        }
-        tasks_set.spawn({
-            let download_path = download_path.clone();
-            let semaphore = semaphore.clone();
-            let yt_dlp_path = yt_dlp_path.clone();
-            async move {
-                let permit = semaphore.acquire_owned().await?;
-                let result = download_link(&link, download_path, yt_dlp_path).await?;
-                println!("done running, slowing...");
-                sleep(Duration::from_secs(secs)).await;
-                drop(permit);
-                Ok::<_, color_eyre::Report>((result, link))
+    for (season_num, episodes_in_season) in links {
+        let season_download_path = download_path.join(season_num.to_string());
+        fs::create_dir_all(&season_download_path).await?;
+        let season_download_path = Arc::new(season_download_path);
+        for link in episodes_in_season {
+            if !link.contains("dropout.tv") {
+                continue;
             }
-        });
+            tasks_set.spawn({
+                let season_download_path = season_download_path.clone();
+                let semaphore = semaphore.clone();
+                let yt_dlp_path = yt_dlp_path.clone();
+                async move {
+                    let permit = semaphore.acquire_owned().await?;
+                    let result = download_link(&link, season_download_path, yt_dlp_path).await?;
+                    println!("done running, slowing...");
+                    sleep(Duration::from_secs(secs)).await;
+                    drop(permit);
+                    Ok::<_, color_eyre::Report>((result, link))
+                }
+            });
+        }
     }
 
-    let mut stdout = tokio::io::stdout();
+    let completed = Arc::new(Mutex::new(match (completed, completed_path) {
+        (Some((f, v)), Some(p)) => Some((f, p, v)),
+        (None, None) => None,
+        s => bail!("invalid state: {s:#?}"),
+    }));
+
     while let Some(result) = tasks_set.join_next().await {
-        let (output, link) = result??;
-        if output.status.success() {
-            if let Some((file, completed_links)) = completed.as_mut() {
-                let completed_path = completed_path
-                    .as_ref()
-                    .expect("completed_path doesn't exist even though links does");
-                *file = File::create(completed_path).await?;
+        tokio::spawn(handle_set(result.map_err(Into::into), completed.clone()));
+    }
+    Ok(())
+}
+
+#[allow(clippy::type_complexity)]
+async fn handle_set(
+    result: Result<Result<(Output, String)>>,
+    completed: Arc<Mutex<Option<(File, PathBuf, Vec<String>)>>>,
+) -> Result<()> {
+    let mut stdout = tokio::io::stdout();
+    let (output, link) = result??;
+    if output.status.success() {
+        {
+            let mut lock = completed.lock().await;
+            if let Some((file, path, completed_links)) = lock.as_mut() {
+                *file = File::create(path).await?;
                 let str = serde_json::to_string(completed_links)?;
                 if !completed_links.contains(&link) {
                     completed_links.push(link.clone());
                 };
                 file.write_all(str.as_bytes()).await?;
             }
-            stdout
-                .write_all(
-                    format!("success! \"{link}\"\n")
-                        .green()
-                        .to_string()
-                        .as_bytes(),
-                )
-                .await?;
-        } else {
-            // failure
-            stdout
-                .write_all(
-                    format!("failure for link \"{link}\" ! \n")
-                        .red()
-                        .to_string()
-                        .as_bytes(),
-                )
-                .await?;
-            stdout.write_all(&output.stderr).await?;
         }
-        stdout.write_all(b"\n").await?;
-        stdout.flush().await?;
+        stdout
+            .write_all(
+                format!("success! \"{link}\"\n")
+                    .green()
+                    .to_string()
+                    .as_bytes(),
+            )
+            .await?;
+    } else {
+        // failure
+        stdout
+            .write_all(
+                format!("failure for link \"{link}\" ! \n")
+                    .red()
+                    .to_string()
+                    .as_bytes(),
+            )
+            .await?;
+        stdout.write_all(&output.stderr).await?;
     }
+    stdout.write_all(b"\n").await?;
+    stdout.flush().await?;
     Ok(())
 }
 
-async fn download_link(link: &str, path: Arc<PathBuf>, cmd_path: PathBuf) -> Result<Output> {
+async fn download_link(link: &str, path: Arc<PathBuf>, cmd_path: Arc<PathBuf>) -> Result<Output> {
     println!("{}", format!("running \"{link}\"").bright_yellow().bold());
     let path = path.to_string_lossy();
     Command::new("/usr/bin/env")
@@ -269,7 +298,7 @@ fn dropout(string: &str) -> String {
     format!("{DROPOUT_URL}{string}")
 }
 
-async fn grab_links(grab: String, seasons: Option<u8>) -> Result<Vec<String>> {
+async fn grab_links(grab: String, seasons: Option<u8>) -> Result<HashMap<u8, Vec<String>>> {
     let driver = WebDriver::new("http://localhost:4444", DesiredCapabilities::firefox()).await?;
     let links_res = grab_links_grab(&driver, grab, seasons).await;
     driver.quit().await?;
@@ -300,9 +329,8 @@ async fn grab_links_grab(
     driver: &WebDriver,
     next_arg: String,
     seasons: Option<u8>,
-) -> Result<Vec<String>> {
+) -> Result<HashMap<u8, Vec<String>>> {
     log_in(driver).await?;
-    let mut links = Vec::new();
     let (count, url_prefix) = match next_arg.as_str() {
         "d20" => (D20_SEASONS, "dimension-20"),
         "gc" => (GC_SEASONS, "game-changer"),
@@ -311,13 +339,17 @@ async fn grab_links_grab(
             .ok_or_eyre("no seasons flag with arbitrary URL")?,
     };
 
+    let mut links = HashMap::new();
+
     for i in 1..=count {
-        let mut dimension_twenty_links = get_links_season(
-            dbg!(dropout(format!("/{url_prefix}/season:{i}").as_str())).as_str(),
-            driver,
-        )
-        .await?;
-        links.append(&mut dimension_twenty_links);
+        links.insert(
+            i,
+            get_links_season(
+                dbg!(dropout(format!("/{url_prefix}/season:{i}").as_str())).as_str(),
+                driver,
+            )
+            .await?,
+        );
     }
 
     Ok(links)
